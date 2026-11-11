@@ -1,0 +1,95 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+model Category {
+  id        String    @id
+  nameRu    String
+  nameUz    String
+  icon      String
+  order     Int       @default(0)
+  products  Product[]
+}
+
+model Product {
+  id                  String   @id @default(cuid())
+  categoryId          String
+  category            Category @relation(fields: [categoryId], references: [id])
+  nameRu              String
+  nameUz              String
+  brand               String
+  model               String
+  priceUzs            Int
+  image               String
+  inStock             Boolean  @default(true)
+  descriptionRu       String?
+  descriptionUz       String?
+  
+  // Power & Thermal
+  tdp                 Int?     // TDP in Watts
+  
+  // Compatibility specs
+  socket              String?  // AM4, AM5, LGA1700, LGA1851
+  ramType             String?  // DDR4, DDR5
+  ramSlots            Int?     // 2 or 4 slots
+  formFactor          String?  // ATX, Micro-ATX, Mini-ITX
+  gpuLength           Int?     // mm
+  maxGpuLength        Int?     // mm for cases
+  coolerHeight        Int?     // mm
+  maxCoolerHeight     Int?     // mm for cases
+  coolerType          String?  // AIR, AIO_240, AIO_360
+  maxRadiatorSupport  String?  // "240mm", "360mm"
+  psuWattage          Int?     // Watts
+  psuCertification    String?  // 80+ Bronze, 80+ Gold, etc.
+  storageInterface    String?  // M.2 NVMe, SATA
+  capacityGb          Int?     // RAM or SSD GB
+  speedMhz            Int?     // RAM MHz / GPU clock
+  
+  // Benchmark indices for FPS calculation
+  cpuScore            Int?     // Single-thread / gaming index (e.g. 1000 - 4500)
+  gpuScore            Int?     // 3D Mark gaming index (e.g. 2000 - 38000)
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model Game {
+  id                  String   @id @default(cuid())
+  title               String
+  image               String
+  genre               String
+  releaseYear         Int
+  gpuIntensity        Float    @default(1.0) // 0.8 (light) to 2.5 (extreme)
+  cpuIntensity        Float    @default(1.0) // 0.8 to 2.0
+  baseFps1080pUltra   Int      @default(60)  // Reference FPS at 1080p Ultra on baseline (RTX 4060)
+  ramMinGb            Int      @default(16)
+  descriptionRu       String
+  descriptionUz       String
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model Order {
+  id                  String   @id @default(cuid())
+  orderNumber         String   @unique
+  customerName        String
+  customerPhone       String
+  customerTelegram    String?
+  deliveryAddress     String?
+  totalUzs            Int
+  status              String   @default("PENDING") // PENDING, PAID, BUILDING, COMPLETED, CANCELLED
+  itemsJson           String   // JSON string of items & custom PC config
+  isCustomPc          Boolean  @default(false)
+  telegramReceiptSent Boolean  @default(false)
+  paymentReceiptUrl   String?  // Path to uploaded receipt image or PDF
+  paymentReceiptName  String?  // Original filename
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}

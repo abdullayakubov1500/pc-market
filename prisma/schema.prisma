@@ -90,6 +90,8 @@ model Order {
   telegramReceiptSent Boolean  @default(false)
   paymentReceiptUrl   String?  // Path to uploaded receipt image or PDF
   paymentReceiptName  String?  // Original filename
+  paymentMethod       String   @default("RECEIPT") // RECEIPT, STRIPE
+  stripeSessionId     String?  // Stripe Checkout Session ID
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }

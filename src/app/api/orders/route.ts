@@ -15,7 +15,9 @@ export async function POST(request: Request) {
       items, 
       isCustomPc,
       paymentReceiptUrl,
-      paymentReceiptName
+      paymentReceiptName,
+      paymentMethod,
+      stripeSessionId
     } = body;
 
     if (!customerName || !customerPhone || !items || items.length === 0) {
@@ -36,6 +38,8 @@ export async function POST(request: Request) {
         itemsJson: JSON.stringify(items),
         paymentReceiptUrl: paymentReceiptUrl || null,
         paymentReceiptName: paymentReceiptName || null,
+        paymentMethod: paymentMethod || 'RECEIPT',
+        stripeSessionId: stripeSessionId || null,
         status: 'PENDING',
       },
     });

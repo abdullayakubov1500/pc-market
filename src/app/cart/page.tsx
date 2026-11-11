@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useI18n } from '@/lib/i18n/context';
 import { useCart } from '@/lib/cart-context';
 import { 
@@ -21,19 +22,27 @@ import {
   UploadCloud,
   File,
   X,
-  Eye,
-  Check
+  CreditCard,
+  AlertCircle
 } from 'lucide-react';
 import Link from 'next/link';
 
-export default function CartPage() {
+function CartContent() {
   const { lang, t, formatPrice } = useI18n();
   const { items, removeFromCart, updateQuantity, clearCart, totalPrice } = useCart();
+  const searchParams = useSearchParams();
+
+  const paymentSuccessParam = searchParams.get('payment_success');
+  const paymentCanceledParam = searchParams.get('payment_canceled');
+  const orderNumberParam = searchParams.get('orderNumber');
 
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('+998 ');
   const [customerTelegram, setCustomerTelegram] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
+
+  // Payment method: STRIPE or RECEIPT
+  const [paymentMethod, setPaymentMethod] = useState<'STRIPE' | 'RECEIPT'>('STRIPE');
 
   // Payment receipt file attachment state
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
@@ -46,6 +55,13 @@ export default function CartPage() {
 
   const [telegramDispatched, setTelegramDispatched] = useState(false);
   const [dispatchingTelegram, setDispatchingTelegram] = useState(false);
+
+  // Clear cart upon successful Stripe payment return
+  useEffect(() => {
+    if (paymentSuccessParam === 'true') {
+      clearCart();
+    }
+  }, [paymentSuccessParam]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
@@ -82,11 +98,43 @@ export default function CartPage() {
     }
 
     setSubmitting(true);
+
+    // 1. Stripe Checkout Flow
+    if (paymentMethod === 'STRIPE') {
+      try {
+        const res = await fetch('/api/checkout/stripe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customerName,
+            customerPhone,
+            customerTelegram,
+            deliveryAddress,
+            totalUzs: totalPrice,
+            items,
+            isCustomPc: items.some((i) => i.isCustomPc),
+          }),
+        });
+
+        const data = await res.json();
+        if (res.ok && data.url) {
+          window.location.href = data.url;
+          return;
+        } else {
+          throw new Error(data.error || 'Не удалось открыть страницу оплаты Stripe');
+        }
+      } catch (err: any) {
+        setErrorMessage(err.message || 'Ошибка при переходе к оплате Stripe');
+        setSubmitting(false);
+        return;
+      }
+    }
+
+    // 2. Manual Receipt Upload Flow
     try {
       let uploadedFileUrl: string | null = null;
       let uploadedFileName: string | null = null;
 
-      // 1. If file attached, upload first
       if (receiptFile) {
         const formData = new FormData();
         formData.append('file', receiptFile);
@@ -105,7 +153,6 @@ export default function CartPage() {
         uploadedFileName = uploadData.fileName;
       }
 
-      // 2. Create Order
       const res = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -119,6 +166,7 @@ export default function CartPage() {
           isCustomPc: items.some((i) => i.isCustomPc),
           paymentReceiptUrl: uploadedFileUrl,
           paymentReceiptName: uploadedFileName,
+          paymentMethod: 'RECEIPT',
         }),
       });
 
@@ -127,7 +175,6 @@ export default function CartPage() {
         setCreatedOrder(data.order);
         clearCart();
 
-        // Dispatch receipt to Telegram Bot
         try {
           await fetch('/api/telegram/send-receipt', {
             method: 'POST',
@@ -138,10 +185,10 @@ export default function CartPage() {
           // ignore
         }
       } else {
-        setErrorMessage(data.error || 'Failed to submit order');
+        throw new Error(data.error || 'Ошибка при создании заказа');
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Network error');
+      setErrorMessage(err.message || 'Произошла ошибка при отправке заказа');
     } finally {
       setSubmitting(false);
     }
@@ -166,8 +213,68 @@ export default function CartPage() {
     }
   };
 
+  // SUCCESS SCREEN (Stripe return)
+  if (paymentSuccessParam === 'true') {
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-16 text-center space-y-6">
+        <div className="w-20 h-20 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 rounded-full flex items-center justify-center mx-auto shadow-2xl shadow-emerald-500/20 animate-bounce">
+          <CheckCircle2 className="w-10 h-10" />
+        </div>
+
+        <div className="space-y-2">
+          <h1 className="text-3xl font-black text-slate-900 dark:text-white">
+            {lang === 'ru' ? 'Оплата через Stripe успешно получена!' : 'Stripe orqali to\'lov muvaffaqiyatli qabul qilindi!'}
+          </h1>
+          <p className="text-slate-600 dark:text-gray-300 text-sm max-w-md mx-auto">
+            {lang === 'ru'
+              ? 'Ваш платёж картой онлайн подтверждён. Заказ передан в сборку, а менеджеру отправлено уведомление в Telegram.'
+              : 'Onlayn karta orqali to\'lovingiz tasdiqlandi. Buyurtma yig\'ishga topshirildi va Telegramga xabar yuborildi.'}
+          </p>
+        </div>
+
+        <div className="bg-white dark:bg-[#0e1422] border border-emerald-500/30 rounded-3xl p-6 sm:p-8 text-left space-y-4 max-w-lg mx-auto shadow-2xl relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-emerald-500 to-cyan-500" />
+          
+          <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-white/10">
+            <div>
+              <span className="text-[10px] text-slate-500 dark:text-gray-400 uppercase font-mono block">Номер заказа</span>
+              <span className="text-xl font-black text-emerald-600 dark:text-emerald-400 font-mono tracking-wider">
+                {orderNumberParam || 'Подтверждён'}
+              </span>
+            </div>
+            <span className="text-xs px-3 py-1 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-bold font-mono">
+              ОПЛАЧЕНО (STRIPE)
+            </span>
+          </div>
+
+          <p className="text-xs text-slate-600 dark:text-gray-400 leading-relaxed">
+            Спасибо за покупку в CYBER-MARKET.UZ! Наш специалист свяжется с вами для согласования времени доставки.
+          </p>
+
+          <div className="pt-4 flex flex-col sm:flex-row gap-3">
+            <Link
+              href="/catalog"
+              className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-black font-extrabold text-xs flex items-center justify-center gap-2 shadow-lg shadow-cyan-500/25 transition-all"
+            >
+              <ShoppingCart className="w-4 h-4" />
+              <span>{lang === 'ru' ? 'В каталог товаров' : 'Katalogga qaytish'}</span>
+            </Link>
+            <Link
+              href="/builder"
+              className="flex-1 py-3 px-4 rounded-xl bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 text-slate-900 dark:text-white font-bold text-xs flex items-center justify-center gap-2 transition-all"
+            >
+              <Cpu className="w-4 h-4 text-cyan-400" />
+              <span>{lang === 'ru' ? '3D Конструктор ПК' : '3D PC Konstruktor'}</span>
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // SUCCESS SCREEN (Manual receipt upload)
   if (createdOrder) {
-    const botUsername = 'cybermarket_uz_bot';
+    const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || 'PC-Builder';
     const telegramBotUrl = `https://t.me/${botUsername}?start=order_${createdOrder.orderNumber}`;
 
     return (
@@ -187,9 +294,7 @@ export default function CartPage() {
           </p>
         </div>
 
-        {/* High-Tech Order Receipt Card */}
         <div className="bg-white dark:bg-[#0e1422] border border-cyan-500/30 rounded-3xl p-6 sm:p-8 text-left space-y-5 max-w-lg mx-auto shadow-2xl relative overflow-hidden">
-          {/* Neon receipt decorative top border */}
           <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-500" />
 
           <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-white/10">
@@ -239,7 +344,6 @@ export default function CartPage() {
             </div>
           </div>
 
-          {/* Telegram Action Buttons Box */}
           <div className="pt-2 space-y-2.5">
             <a
               href={telegramBotUrl}
@@ -248,54 +352,40 @@ export default function CartPage() {
               className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-extrabold text-xs flex items-center justify-center gap-2 shadow-lg shadow-sky-500/25 transition-all"
             >
               <Send className="w-4 h-4" />
-              <span>{lang === 'ru' ? 'Получить чек в Telegram-боте' : 'Telegram bot orqali chekni olish'}</span>
+              <span>{lang === 'ru' ? 'Открыть бота и получить чек в Telegram' : 'Botni ochish va chekni Telegramda olish'}</span>
             </a>
 
             <button
-              type="button"
               onClick={handleManualTelegramSend}
               disabled={dispatchingTelegram || telegramDispatched}
-              className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${
-                telegramDispatched
-                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-                  : 'bg-slate-100 dark:bg-white/5 text-slate-700 dark:text-gray-300 hover:bg-slate-200 dark:hover:bg-white/10 border-slate-300 dark:border-white/10'
-              }`}
+              className="w-full py-2.5 px-4 rounded-xl border border-sky-500/30 hover:border-sky-500/60 bg-sky-500/10 text-sky-600 dark:text-sky-300 text-xs font-semibold flex items-center justify-center gap-2 transition-all disabled:opacity-50"
             >
-              {telegramDispatched ? (
+              {dispatchingTelegram ? (
+                <div className="w-4 h-4 border-2 border-sky-400 border-t-transparent rounded-full animate-spin" />
+              ) : telegramDispatched ? (
                 <>
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>{lang === 'ru' ? 'Чек отправлен в Telegram!' : 'Chek Telegramga yuborildi!'}</span>
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <span>Чек отправлен менеджеру в Telegram!</span>
                 </>
-              ) : dispatchingTelegram ? (
-                <span>{lang === 'ru' ? 'Отправка...' : 'Yuborilmoqda...'}</span>
               ) : (
-                <>
-                  <Send className="w-3.5 h-3.5 text-cyan-500" />
-                  <span>{lang === 'ru' ? 'Отправить чек на мой Telegram' : 'Mening Telegramimga yuborish'}</span>
-                </>
+                <span>Отправить дубликат чека менеджеру</span>
               )}
             </button>
           </div>
-
-          {/* Barcode Mockup */}
-          <div className="pt-3 border-t border-slate-200 dark:border-white/10 flex items-center justify-between text-[11px] text-slate-400 dark:text-gray-500 font-mono">
-            <span>||| | | |||| || | ||||| | ||</span>
-            <span>CYBER-MARKET.UZ</span>
-          </div>
         </div>
 
-        <div className="pt-4 flex items-center justify-center gap-4">
+        <div className="flex justify-center gap-4 pt-4">
           <Link
             href="/catalog"
-            className="px-6 py-3 rounded-xl bg-slate-200 dark:bg-white/10 hover:bg-slate-300 dark:hover:bg-white/20 text-slate-900 dark:text-white font-bold text-xs border border-slate-300 dark:border-white/10 transition-all"
+            className="px-6 py-3 rounded-xl bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-800 dark:text-white text-xs font-bold transition-all"
           >
-            {lang === 'ru' ? 'В каталог' : 'Katalogga qaytish'}
+            {lang === 'ru' ? 'В каталог товаров' : 'Katalogga qaytish'}
           </Link>
           <Link
             href="/builder"
-            className="px-6 py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-extrabold text-xs shadow-lg shadow-cyan-500/20 transition-all"
+            className="px-6 py-3 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30 text-xs font-bold transition-all"
           >
-            {lang === 'ru' ? 'Собрать новый ПК' : 'Yangi kompyuter yig\'ish'}
+            {lang === 'ru' ? '3D Конструктор ПК' : '3D PC Konstruktor'}
           </Link>
         </div>
       </div>
@@ -303,52 +393,55 @@ export default function CartPage() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-      
-      {/* Title */}
-      <div className="flex items-center justify-between pb-6 border-b border-slate-200 dark:border-white/10">
+    <div className="container mx-auto px-4 py-8 max-w-6xl">
+      <div className="flex items-center gap-3 mb-8">
+        <div className="p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-600 dark:text-cyan-400">
+          <ShoppingCart className="w-6 h-6" />
+        </div>
         <div>
-          <h1 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight flex items-center gap-3">
-            <ShoppingCart className="w-8 h-8 text-cyan-500 dark:text-cyan-400" />
-            <span>{t.cartPage.title}</span>
+          <h1 className="text-2xl font-black text-slate-900 dark:text-white">
+            {t.cartPage.title}
           </h1>
-          <p className="text-slate-600 dark:text-gray-400 text-xs sm:text-sm mt-1">
-            {lang === 'ru'
-              ? 'Проверьте состав заказа перед отправкой и формированием чека'
-              : 'Buyurtmani tasdiqlash va chek olishdan oldin tarkibini tekshiring'}
+          <p className="text-slate-500 dark:text-gray-400 text-xs">
+            {items.length === 0 ? (lang === 'ru' ? 'Корзина пуста' : 'Savatcha bo\'sh') : `${items.length} ${t.cartPage.itemsCount}`}
           </p>
         </div>
-
-        {items.length > 0 && (
-          <button
-            onClick={clearCart}
-            className="flex items-center gap-1.5 text-xs text-red-500 hover:text-red-400 font-semibold"
-          >
-            <Trash2 className="w-4 h-4" />
-            <span>{t.cartPage.clearCart}</span>
-          </button>
-        )}
       </div>
 
-      {items.length === 0 ? (
-        <div className="py-24 text-center bg-white dark:bg-[#0e1422] rounded-3xl border border-slate-200 dark:border-white/10 max-w-2xl mx-auto space-y-4 shadow-sm">
-          <ShoppingCart className="w-12 h-12 text-slate-400 dark:text-gray-600 mx-auto" />
-          <h3 className="text-lg font-bold text-slate-900 dark:text-white">{t.common.emptyCart}</h3>
-          <p className="text-xs text-slate-500 dark:text-gray-400 max-w-sm mx-auto">
+      {/* Stripe Payment Canceled Notice */}
+      {paymentCanceledParam === 'true' && (
+        <div className="mb-6 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-500 shrink-0" />
+          <span>
             {lang === 'ru'
-              ? 'Выберите детали в каталоге или соберите конфигурацию в нашем умном конструкторе ПК.'
-              : 'Katalogdan qismlarni tanlang yoki aqlli PC konstruktorimizda kompyuter yig\'ing.'}
+              ? 'Оплата через Stripe была отменена. Товары сохранены в вашей корзине, вы можете повторить попытку оплаты картой или прикрепить квитанцию перевода.'
+              : 'Stripe orqali to\'lov bekor qilindi. Tovarlar savatingizda saqlandi, qayta urinib ko\'rishingiz mumkin.'}
+          </span>
+        </div>
+      )}
+
+      {items.length === 0 ? (
+        <div className="text-center py-20 bg-white dark:bg-[#0c1017] rounded-3xl border border-slate-200 dark:border-white/5 p-8 max-w-md mx-auto">
+          <div className="w-16 h-16 rounded-full bg-slate-100 dark:bg-white/5 flex items-center justify-center mx-auto text-slate-400 mb-4">
+            <ShoppingCart className="w-8 h-8 opacity-40" />
+          </div>
+          <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">
+            {lang === 'ru' ? 'Ваша корзина пуста' : 'Savatchangiz bo\'sh'}
+          </h3>
+          <p className="text-slate-500 dark:text-gray-400 text-xs mb-6">
+            Добавьте комплектующие из каталога или соберите ПК в 3D конфигураторе
           </p>
-          <div className="flex items-center justify-center gap-3 pt-2">
+          <div className="flex flex-col gap-2.5">
             <Link
               href="/catalog"
-              className="px-5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 text-slate-800 dark:text-white font-bold text-xs"
+              className="py-3 px-5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-extrabold text-xs transition-all flex items-center justify-center gap-2"
             >
-              {t.common.catalog}
+              <span>{lang === 'ru' ? 'Перейти в каталог' : 'Katalogga o\'tish'}</span>
+              <ArrowRight className="w-4 h-4" />
             </Link>
             <Link
               href="/builder"
-              className="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-extrabold text-xs shadow-md shadow-cyan-500/20"
+              className="py-3 px-5 rounded-xl bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-800 dark:text-white font-bold text-xs transition-all"
             >
               {t.common.builder}
             </Link>
@@ -357,110 +450,120 @@ export default function CartPage() {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           
-          {/* Left Column (7 Cols): Items List */}
+          {/* Cart Items List (7 cols) */}
           <div className="lg:col-span-7 space-y-4">
-            {items.map((item) => (
-              <div
-                key={item.id}
-                className="bg-white dark:bg-[#0e1422] border border-slate-200 dark:border-white/10 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all hover:border-slate-300 dark:hover:border-white/20 shadow-sm"
+            <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-white/10">
+              <span className="text-xs font-bold text-slate-500 dark:text-gray-400 uppercase tracking-wider">
+                Выбранные товары
+              </span>
+              <button
+                onClick={clearCart}
+                className="text-xs text-red-500 hover:text-red-400 flex items-center gap-1 font-semibold transition-colors"
               >
-                <div className="flex items-center gap-4 min-w-0">
-                  <img
-                    src={item.image}
-                    alt={item.nameRu}
-                    className="w-16 h-16 rounded-xl object-cover bg-slate-100 dark:bg-black/40 border border-slate-200 dark:border-white/10 shrink-0"
-                  />
-                  <div className="min-w-0">
-                    {item.isCustomPc && (
-                      <span className="text-[10px] font-bold font-mono px-2 py-0.5 rounded bg-cyan-100 dark:bg-cyan-950 text-cyan-700 dark:text-cyan-400 border border-cyan-300 dark:border-cyan-800 uppercase block w-fit mb-1">
-                        Кастомная сборка ПК
-                      </span>
-                    )}
-                    <h3 className="font-bold text-slate-900 dark:text-white text-sm sm:text-base truncate">
-                      {lang === 'ru' ? item.nameRu : item.nameUz}
-                    </h3>
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Очистить корзину</span>
+              </button>
+            </div>
 
-                    {/* Breakdown of custom PC specs if applicable */}
-                    {item.isCustomPc && item.buildSpecs && (
-                      <div className="text-[11px] text-slate-500 dark:text-gray-400 font-mono mt-1 space-y-0.5">
-                        {item.buildSpecs.cpu && <div>• CPU: {item.buildSpecs.cpu.model}</div>}
-                        {item.buildSpecs.gpu && <div>• GPU: {item.buildSpecs.gpu.model}</div>}
-                        {item.buildSpecs.motherboard && <div>• MB: {item.buildSpecs.motherboard.model}</div>}
-                        {item.buildSpecs.ram && <div>• RAM: {item.buildSpecs.ram.model}</div>}
+            <div className="space-y-3">
+              {items.map((item) => (
+                <div
+                  key={item.id}
+                  className="p-4 rounded-2xl bg-white dark:bg-[#0c1017] border border-slate-200 dark:border-white/5 hover:border-cyan-500/30 transition-all flex items-center gap-4 shadow-sm"
+                >
+                  <div className="w-16 h-16 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 flex items-center justify-center p-2 shrink-0">
+                    {item.image ? (
+                      <img src={item.image} alt={item.nameRu} className="max-h-full max-w-full object-contain" />
+                    ) : (
+                      <Cpu className="w-6 h-6 text-slate-400" />
+                    )}
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      {item.isCustomPc && (
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30">
+                          3D Сборка ПК
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-bold text-sm text-slate-900 dark:text-white truncate mt-0.5">
+                      {lang === 'ru' ? item.nameRu : item.nameUz}
+                    </h4>
+                    <p className="font-mono text-cyan-600 dark:text-cyan-400 text-xs font-bold mt-1">
+                      {formatPrice(item.priceUzs)}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {!item.isCustomPc && (
+                      <div className="flex items-center rounded-lg bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 p-0.5">
+                        <button
+                          onClick={() => updateQuantity(item.id, item.quantity - 1)}
+                          className="p-1 hover:text-cyan-400 text-slate-600 dark:text-gray-400 transition-colors"
+                        >
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="w-7 text-center font-mono text-xs font-bold text-slate-900 dark:text-white">
+                          {item.quantity}
+                        </span>
+                        <button
+                          onClick={() => updateQuantity(item.id, item.quantity + 1)}
+                          className="p-1 hover:text-cyan-400 text-slate-600 dark:text-gray-400 transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     )}
 
-                    <span className="font-bold text-cyan-600 dark:text-cyan-300 font-mono text-sm block mt-1">
-                      {formatPrice(item.priceUzs)}
-                    </span>
+                    <button
+                      onClick={() => removeFromCart(item.id)}
+                      className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
                 </div>
+              ))}
+            </div>
 
-                <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-4 pt-3 sm:pt-0 border-t sm:border-t-0 border-slate-100 dark:border-white/5">
-                  {!item.isCustomPc && (
-                    <div className="flex items-center bg-slate-100 dark:bg-black/60 rounded-xl border border-slate-200 dark:border-white/10 p-1">
-                      <button
-                        onClick={() => updateQuantity(item.id, -1)}
-                        className="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-white/10 text-slate-600 dark:text-gray-400 hover:text-black dark:hover:text-white"
-                      >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-                      <span className="px-3 text-xs font-bold text-slate-900 dark:text-white font-mono">
-                        {item.quantity}
-                      </span>
-                      <button
-                        onClick={() => updateQuantity(item.id, 1)}
-                        className="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-white/10 text-slate-600 dark:text-gray-400 hover:text-black dark:hover:text-white"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={() => removeFromCart(item.id)}
-                    className="p-2 rounded-xl bg-slate-100 dark:bg-white/5 hover:bg-red-500/20 text-slate-500 dark:text-gray-400 hover:text-red-500 border border-slate-200 dark:border-white/5"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ))}
+            <div className="p-4 rounded-2xl bg-cyan-500/5 border border-cyan-500/20 flex items-center gap-3 text-slate-600 dark:text-gray-400 text-xs">
+              <ShieldCheck className="w-5 h-5 text-cyan-500 shrink-0" />
+              <span>Официальная гарантия до 36 месяцев на все комплектующие и бесплатная сборка ПК при заказе онлайн.</span>
+            </div>
           </div>
 
-          {/* Right Column (5 Cols): Checkout Form */}
-          <div className="lg:col-span-5 bg-white dark:bg-[#0e1422] border border-cyan-500/30 rounded-3xl p-6 sm:p-8 space-y-6 shadow-xl">
-            <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <FileText className="w-5 h-5 text-cyan-500" />
-              <span>{t.cartPage.orderSummary}</span>
-            </h2>
+          {/* Checkout Form & Stripe Selector (5 cols) */}
+          <div className="lg:col-span-5 bg-white dark:bg-[#0c1017] border border-slate-200 dark:border-white/5 rounded-3xl p-6 space-y-6 shadow-xl sticky top-24">
+            <h3 className="text-lg font-black text-slate-900 dark:text-white border-b border-slate-200 dark:border-white/10 pb-4">
+              {t.cartPage.orderSummary}
+            </h3>
 
-            {/* Total calculation */}
-            <div className="p-4 rounded-2xl bg-slate-100 dark:bg-black/40 border border-slate-200 dark:border-white/10 space-y-2 text-xs">
-              <div className="flex justify-between text-slate-600 dark:text-gray-400">
-                <span>{t.cartPage.itemsCount}:</span>
-                <span className="font-mono text-slate-900 dark:text-white">{items.length}</span>
+            {/* Total Price Box */}
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 space-y-2">
+              <div className="flex justify-between text-xs text-slate-500 dark:text-gray-400">
+                <span>Товары ({items.length}):</span>
+                <span className="font-mono">{formatPrice(totalPrice)}</span>
               </div>
-              <div className="flex justify-between text-slate-600 dark:text-gray-400">
+              <div className="flex justify-between text-xs text-slate-500 dark:text-gray-400">
                 <span>Доставка по Ташкенту:</span>
-                <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono">Бесплатно (0 сум)</span>
+                <span className="text-emerald-500 font-bold">БЕСПЛАТНО</span>
               </div>
-              <div className="pt-2 border-t border-slate-200 dark:border-white/10 flex justify-between items-baseline">
-                <span className="text-sm font-bold text-slate-900 dark:text-white">{t.common.total}:</span>
-                <span className="text-2xl font-black text-cyan-600 dark:text-cyan-300 font-mono">
+              <div className="flex justify-between pt-2 border-t border-slate-200 dark:border-white/10 text-base font-black">
+                <span className="text-slate-900 dark:text-white">{t.common.total}:</span>
+                <span className="text-cyan-600 dark:text-cyan-400 font-mono text-lg">
                   {formatPrice(totalPrice)}
                 </span>
               </div>
             </div>
 
-            {/* Form */}
-            <form onSubmit={handleSubmitOrder} className="space-y-4">
-              {errorMessage && (
-                <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-600 dark:text-rose-300 text-xs font-medium">
-                  {errorMessage}
-                </div>
-              )}
+            {errorMessage && (
+              <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-500 text-xs">
+                {errorMessage}
+              </div>
+            )}
 
+            <form onSubmit={handleSubmitOrder} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-gray-300 mb-1 flex items-center gap-1.5">
                   <User className="w-3.5 h-3.5 text-cyan-500" />
@@ -519,84 +622,141 @@ export default function CartPage() {
                 />
               </div>
 
-              {/* PAYMENT RECEIPT FILE ATTACHMENT */}
+              {/* PAYMENT METHOD SELECTOR */}
               <div className="pt-2">
-                <label className="block text-xs font-bold text-slate-800 dark:text-gray-200 mb-1.5 flex items-center justify-between">
-                  <span className="flex items-center gap-1.5">
-                    <UploadCloud className="w-4 h-4 text-cyan-500" />
-                    <span>Прикрепить чек об оплате (JPG, PNG или PDF)</span>
-                  </span>
-                  <span className="text-[10px] text-slate-500 font-normal">Payme, Click, Uzum, Банк</span>
+                <label className="block text-xs font-bold text-slate-800 dark:text-gray-200 mb-2">
+                  Способ оплаты / To'lov usuli:
                 </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMethod('STRIPE')}
+                    className={`p-3 rounded-2xl border flex flex-col items-center gap-1.5 transition-all text-center ${
+                      paymentMethod === 'STRIPE'
+                        ? 'border-cyan-500 bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-bold shadow-sm ring-1 ring-cyan-500/50'
+                        : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 text-slate-600 dark:text-gray-400 bg-slate-50 dark:bg-black/20'
+                    }`}
+                  >
+                    <CreditCard className="w-5 h-5 text-cyan-500" />
+                    <span className="text-xs font-bold">Stripe Checkout</span>
+                    <span className="text-[10px] opacity-75">Картой онлайн (Visa/MC)</span>
+                  </button>
 
-                {!receiptFile ? (
-                  <label className="border-2 border-dashed border-slate-300 dark:border-white/20 hover:border-cyan-500 dark:hover:border-cyan-400 rounded-2xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all bg-slate-50 dark:bg-black/30 hover:bg-slate-100 dark:hover:bg-black/50">
-                    <UploadCloud className="w-7 h-7 text-cyan-500 mb-1.5" />
-                    <span className="text-xs font-bold text-slate-800 dark:text-white">
-                      Выберите файл чека или перетащите сюда
-                    </span>
-                    <span className="text-[10px] text-slate-500 dark:text-gray-400 mt-0.5">
-                      Поддерживаются изображения и PDF до 15 МБ
-                    </span>
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp,application/pdf"
-                      onChange={handleFileChange}
-                      className="hidden"
-                    />
-                  </label>
-                ) : (
-                  <div className="p-3.5 rounded-2xl bg-slate-100 dark:bg-black/60 border border-cyan-500/40 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      {filePreview ? (
-                        <img
-                          src={filePreview}
-                          alt="Чек оплаты"
-                          className="w-12 h-12 rounded-xl object-cover border border-slate-300 dark:border-white/20 shrink-0"
-                        />
-                      ) : (
-                        <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500 shrink-0">
-                          <FileText className="w-6 h-6" />
-                        </div>
-                      )}
-                      <div className="min-w-0">
-                        <span className="font-bold text-xs text-slate-900 dark:text-white block truncate">
-                          {receiptFile.name}
-                        </span>
-                        <span className="text-[10px] text-slate-500 dark:text-gray-400 font-mono">
-                          {(receiptFile.size / 1024).toFixed(1)} KB • {isPdf ? 'Документ PDF' : 'Изображение'}
-                        </span>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={removeAttachedFile}
-                      className="p-1.5 rounded-xl bg-slate-200 dark:bg-white/10 hover:bg-red-500/20 text-slate-600 dark:text-gray-400 hover:text-red-500 transition-colors shrink-0"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMethod('RECEIPT')}
+                    className={`p-3 rounded-2xl border flex flex-col items-center gap-1.5 transition-all text-center ${
+                      paymentMethod === 'RECEIPT'
+                        ? 'border-cyan-500 bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-bold shadow-sm ring-1 ring-cyan-500/50'
+                        : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 text-slate-600 dark:text-gray-400 bg-slate-50 dark:bg-black/20'
+                    }`}
+                  >
+                    <UploadCloud className="w-5 h-5 text-cyan-500" />
+                    <span className="text-xs font-bold">Чек перевода</span>
+                    <span className="text-[10px] opacity-75">Payme, Click, Банк</span>
+                  </button>
+                </div>
               </div>
 
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-black font-black text-sm shadow-xl shadow-cyan-500/25 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
-              >
-                {submitting ? (
-                  <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <Send className="w-4 h-4" />
-                    <span>{t.cartPage.submitOrder}</span>
-                  </>
-                )}
-              </button>
+              {/* RECEIPT ATTACHMENT BOX (Only if RECEIPT is selected) */}
+              {paymentMethod === 'RECEIPT' && (
+                <div className="pt-1">
+                  <label className="block text-xs font-bold text-slate-800 dark:text-gray-200 mb-1.5 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <UploadCloud className="w-4 h-4 text-cyan-500" />
+                      <span>Прикрепить квитанцию об оплате (JPG, PNG или PDF)</span>
+                    </span>
+                  </label>
+
+                  {!receiptFile ? (
+                    <label className="border-2 border-dashed border-slate-300 dark:border-white/20 hover:border-cyan-500 dark:hover:border-cyan-400 rounded-2xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all bg-slate-50 dark:bg-black/30 hover:bg-slate-100 dark:hover:bg-black/50">
+                      <UploadCloud className="w-7 h-7 text-cyan-500 mb-1.5" />
+                      <span className="text-xs font-bold text-slate-800 dark:text-white">
+                        Выберите файл чека или перетащите сюда
+                      </span>
+                      <span className="text-[10px] text-slate-500 dark:text-gray-400 mt-0.5">
+                        Сохраняется в Neon Object Storage до 15 МБ
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,application/pdf"
+                        onChange={handleFileChange}
+                        className="hidden"
+                      />
+                    </label>
+                  ) : (
+                    <div className="p-3.5 rounded-2xl bg-slate-100 dark:bg-black/60 border border-cyan-500/40 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        {filePreview ? (
+                          <img
+                            src={filePreview}
+                            alt="Чек оплаты"
+                            className="w-12 h-12 rounded-xl object-cover border border-slate-300 dark:border-white/20 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500 shrink-0">
+                            <FileText className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <span className="font-bold text-xs text-slate-900 dark:text-white block truncate">
+                            {receiptFile.name}
+                          </span>
+                          <span className="text-[10px] text-slate-500 dark:text-gray-400 font-mono">
+                            {(receiptFile.size / 1024).toFixed(1)} KB • {isPdf ? 'Документ PDF' : 'Изображение'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={removeAttachedFile}
+                        className="p-1.5 rounded-xl bg-slate-200 dark:bg-white/10 hover:bg-red-500/20 text-slate-600 dark:text-gray-400 hover:text-red-500 transition-colors shrink-0"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ACTION BUTTON */}
+              {paymentMethod === 'STRIPE' ? (
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="w-full py-4 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-600 hover:from-blue-500 hover:via-indigo-500 hover:to-cyan-500 text-white font-black text-sm shadow-xl shadow-indigo-500/25 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+                >
+                  {submitting ? (
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <CreditCard className="w-4 h-4" />
+                      <span>{lang === 'ru' ? 'Оплатить картой через Stripe' : 'Stripe orqali karta bilan to\'lash'}</span>
+                    </>
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-black font-black text-sm shadow-xl shadow-cyan-500/25 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+                >
+                  {submitting ? (
+                    <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4" />
+                      <span>{t.cartPage.submitOrder}</span>
+                    </>
+                  )}
+                </button>
+              )}
 
               <p className="text-[11px] text-slate-500 dark:text-gray-400 text-center leading-relaxed">
-                Чек оплаты сохраняется в системе и автоматически пересылается менеджеру в Telegram.
+                {paymentMethod === 'STRIPE'
+                  ? 'Безопасная оплата через официальный защищённый шлюз Stripe (Visa, Mastercard, Apple Pay).'
+                  : 'Чек оплаты сохраняется в Neon Object Storage и автоматически пересылается менеджеру в Telegram.'}
               </p>
             </form>
           </div>
@@ -605,5 +765,13 @@ export default function CartPage() {
       )}
 
     </div>
+  );
+}
+
+export default function CartPage() {
+  return (
+    <Suspense fallback={<div className="container mx-auto px-4 py-16 text-center text-sm text-slate-500">Загрузка корзины...</div>}>
+      <CartContent />
+    </Suspense>
   );
 }

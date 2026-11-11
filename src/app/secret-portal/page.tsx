@@ -20,7 +20,8 @@ import {
   Eye, 
   AlertCircle,
   FileText,
-  File
+  File,
+  CreditCard
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -418,7 +419,16 @@ export default function AdminSecretPortalPage() {
                           {formatPrice(order.totalUzs)}
                         </td>
                         <td className="p-4">
-                          {order.paymentReceiptUrl ? (
+                          {order.paymentMethod === 'STRIPE' ? (
+                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-bold text-[11px] border shadow-sm ${
+                              order.status === 'PAID'
+                                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                : 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30'
+                            }`}>
+                              <CreditCard className="w-3.5 h-3.5" />
+                              <span>Stripe ({order.status === 'PAID' ? 'Оплачено' : 'Ожидание'})</span>
+                            </span>
+                          ) : order.paymentReceiptUrl ? (
                             <a
                               href={order.paymentReceiptUrl}
                               target="_blank"

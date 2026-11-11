@@ -239,3 +239,47 @@ export async function sendReceiptToTelegram(orderId: string, targetChatId?: stri
     receiptText: textRu,
   };
 }
+
+export async function sendStripePaymentSuccessNotification(orderId: string, stripeSessionId?: string) {
+  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  if (!order) return;
+
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
+
+  if (token && adminChatId) {
+    const text = `💳 <b>ОПЛАТА ПОЛУЧЕНА ЧЕРЕЗ STRIPE!</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🆔 <b>Заказ:</b> #${order.orderNumber}\n` +
+      `💰 <b>Сумма:</b> ${formatUzsPrice(order.totalUzs)}\n` +
+      `👤 <b>Покупатель:</b> ${order.customerName}\n` +
+      `📞 <b>Телефон:</b> ${order.customerPhone}\n` +
+      (order.customerTelegram ? `✈️ <b>Telegram:</b> ${order.customerTelegram}\n` : '') +
+      `⚡ <b>Статус:</b> ОПЛАЧЕНО (Картой онлайн)\n` +
+      (stripeSessionId ? `🔗 <b>Stripe Session:</b> <code>${stripeSessionId}</code>\n` : '') +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `<i>Заказ готов к передаче на сборку и доставку!</i>`;
+
+    try {
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: adminChatId,
+          text,
+          parse_mode: 'HTML',
+        }),
+      });
+    } catch (e) {
+      console.error('Error sending Stripe notification to telegram:', e);
+    }
+  }
+
+  // Also send itemized breakdown
+  try {
+    await sendReceiptToTelegram(orderId, adminChatId);
+  } catch (e) {
+    console.error('Error sending full order receipt after Stripe payment:', e);
+  }
+}
+
